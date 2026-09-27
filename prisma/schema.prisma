@@ -1,0 +1,266 @@
+// Customer Inquiry Tracking System — Phase 1
+// Toyota Albay Sales Department
+//
+// Schema follows the Phase 1 spec's 4-tier hierarchy and status lifecycle.
+// A handful of OPTIONAL fields (subject, company, priority, source, value)
+// are included beyond the spec so the API shape lines up with the existing
+// frontend prototype's data model. They are nullable and unused by any
+// Phase 1 requirement — safe to ignore or drop later.
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+enum Role {
+  admin
+  manager
+  leader
+  sales
+}
+
+enum InquiryStatus {
+  new
+  ongoing
+  completed
+}
+
+// Optional extras, kept separate from the spec's core enums so it's obvious
+// what's Phase-1-required (Role, InquiryStatus) vs. prototype-alignment extras.
+enum Priority {
+  low
+  medium
+  high
+  critical
+}
+
+enum InquirySource {
+  social
+  email
+  phone
+  physical
+}
+
+enum InquiryType {
+  new_vehicle
+  parts
+  repair
+}
+
+enum PreferredTransaction {
+  financing
+  cash
+  trade_in
+  lease
+  other
+}
+
+// Phase 2 — see docs/phase2_logs_inquiries_spec.md
+enum ActivityAction {
+  login
+  inquiry_created
+  inquiry_status_changed
+  inquiry_updated
+  inquiry_deleted
+  inquiry_restored
+  inquiry_permanently_deleted
+  user_created
+  user_updated
+  user_deactivated
+  user_reactivated
+  user_deleted
+  contact_updated
+  contact_deleted
+}
+
+enum ActivityTargetType {
+  inquiry
+  user
+  contact
+}
+
+// A "Contact" — one row per real-world customer, matched by name
+// case-insensitively (see resolveOrCreateCustomer in
+// src/utils/customers.js). Every inquiry that types "chester" or "Chester"
+// links to the same Customer row; `name` keeps the first-typed casing for
+// display, `normalizedName` (lowercased/trimmed) is the actual dedup key.
+model Customer {
+  id             String   @id @default(uuid())
+  name           String
+  normalizedName String   @unique
+  createdAt      DateTime @default(now())
+
+  // "Who's marketing entertained or logged this customer first" — the
+  // creator of this customer's earliest inquiry, set once at creation and
+  // never changed even if that inquiry is later reassigned/edited.
+  firstLoggedById String?
+  firstLoggedBy   User?   @relation("FirstLoggedCustomers", fields: [firstLoggedById], references: [id])
+
+  // Soft delete — same pattern as User/Inquiry. A deleted contact drops out
+  // of the Contacts list, but inquiries that reference it keep resolving
+  // fine (the row isn't gone, just hidden).
+  deletedAt DateTime?
+
+  inquiries Inquiry[]
+
+  @@index([normalizedName])
+  @@index([deletedAt])
+}
+
+model User {
+  id           String   @id @default(uuid())
+  name         String
+  email        String   @unique
+  passwordHash String
+  role         Role
+  isActive     Boolean  @default(true)
+  createdAt    DateTime @default(now())
+
+  // "Delete Account" (distinct from Deactivate). The row is NEVER removed —
+  // every inquiry/activity-log record that references this user must keep
+  // resolving to a real name for historical accuracy. Deleting sets both
+  // deletedAt and isActive=false (blocks login, same as Deactivate), and
+  // additionally hides the account from User Management / User Information
+  // / Team Chart / assignment pickers. Their existing inquiries are
+  // untouched and stay reassignable by the appropriate leader/manager —
+  // nothing cascades or gets orphaned to null.
+  deletedAt DateTime?
+
+  // Set on every successful login (see auth.controller.js). Null until the
+  // account's first login. Purely informational — not used for any access
+  // control decision.
+  lastLoginAt DateTime?
+
+  // manager_id: set for leaders, points at their supervising Manager
+  managerId String?
+  manager   User?   @relation("ManagerToLeader", fields: [managerId], references: [id])
+  leaders   User[]  @relation("ManagerToLeader")
+
+  // leader_id: set for sales employees, points at their supervising Leader
+  leaderId String?
+  leader   User?   @relation("LeaderToSales", fields: [leaderId], references: [id])
+  salesReps User[] @relation("LeaderToSales")
+
+  inquiriesAssigned Inquiry[] @relation("AssignedInquiries")
+  inquiriesCreated  Inquiry[] @relation("CreatedInquiries")
+  inquiriesDeleted  Inquiry[] @relation("DeletedInquiries")
+  activityLogs      ActivityLog[] @relation("ActivityActor")
+  customersFirstLogged Customer[] @relation("FirstLoggedCustomers")
+  inquiriesSeen     InquirySeen[]
+
+  @@index([managerId])
+  @@index([leaderId])
+  @@index([role])
+}
+
+model Inquiry {
+  id              String        @id @default(uuid())
+  customerName    String
+  customerContact String
+  details         String
+  status          InquiryStatus @default(new)
+
+  assignedTo   String
+  assignedUser User   @relation("AssignedInquiries", fields: [assignedTo], references: [id])
+  createdBy    String
+  creator      User   @relation("CreatedInquiries", fields: [createdBy], references: [id])
+
+  // Phase 3 — set at creation, and re-set (only) when assignedTo actually
+  // changes via reassignment. Distinct from updatedAt, which bumps on
+  // every edit — this is specifically "when did this land with its
+  // current assignee," used to detect a fresh assignment for the unseen
+  // notification system (see utils/unseen.js).
+  assignedAt DateTime @default(now())
+
+  // Auto-resolved on create/rename from customerName — see
+  // resolveOrCreateCustomer in src/utils/customers.js. Nullable so this
+  // migration doesn't break pre-existing rows; run
+  // backend/scripts/backfillCustomers.js once after migrating to link
+  // historical inquiries retroactively.
+  customerId String?
+  customer   Customer? @relation(fields: [customerId], references: [id])
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  // Set automatically the moment `status` transitions to `completed`
+  // (cleared if reverted). This — not updatedAt — drives the Completed
+  // hierarchical Year -> Month grouping, since updatedAt also moves on
+  // unrelated edits.
+  completedAt DateTime?
+
+  // Soft delete. Presence of deletedAt = hidden from the normal
+  // Active/Completed tabs and shown only in Deleted. Never hard-deleted so
+  // historical records and audit logs stay intact.
+  deletedAt DateTime?
+  deletedBy String?
+  deletedByUser User? @relation("DeletedInquiries", fields: [deletedBy], references: [id])
+
+  // Optional, not in the Phase 1 spec — present so the API can serve the
+  // existing frontend prototype's fields without a breaking schema change.
+  subject  String?
+  company  String?
+  priority Priority?
+  source   InquirySource?
+  value    Decimal?       @db.Decimal(12, 2)
+
+  // Phase 2 extended fields — see docs/phase2_logs_inquiries_spec.md §2.1.
+  // Nullable at the DB level (so this migration doesn't break any existing
+  // seeded rows); the API requires inquiryType + priority on create going
+  // forward via zod, independent of the DB-level nullability.
+  inquiryType          InquiryType?
+  unit                 String?
+  preferredTransaction PreferredTransaction?
+  lastContactAt        DateTime?
+  reminderAt           DateTime?
+
+  // Phase 3 — per-viewer "have they seen this" state, for the unseen red
+  // dots. See docs/phase3_tasks_escalation_notifications_spec.md §4.
+  seenBy InquirySeen[]
+
+  @@index([assignedTo])
+  @@index([status])
+  @@index([createdAt])
+  @@index([completedAt])
+  @@index([deletedAt])
+  @@index([customerId])
+}
+
+// Phase 3 — one row per (user, inquiry) that user has ever opened. No row
+// = never seen by them. Compared against the inquiry's "trigger" instant
+// (most recent of: assignedAt, or the moment it went stale) to decide
+// whether a red dot shows for that specific user. See utils/unseen.js.
+model InquirySeen {
+  id         String   @id @default(uuid())
+  userId     String
+  user       User     @relation(fields: [userId], references: [id])
+  inquiryId  String
+  inquiry    Inquiry  @relation(fields: [inquiryId], references: [id])
+  lastSeenAt DateTime @default(now())
+
+  @@unique([userId, inquiryId])
+  @@index([inquiryId])
+}
+
+// Phase 2 — audit trail powering Logs -> Activity. Retention: rows older
+// than 30 days are purged by a nightly job (see src/jobs/purgeActivityLogs.js)
+// rather than kept forever, per the ~50k-row performance constraint.
+model ActivityLog {
+  id         String             @id @default(uuid())
+  actorId    String
+  actor      User               @relation("ActivityActor", fields: [actorId], references: [id])
+  action     ActivityAction
+  targetType ActivityTargetType
+  targetId   String
+  // Human-readable detail, e.g.
+  // { "customerName": "Juan Dela Cruz", "field": "status", "from": "new", "to": "ongoing" }
+  metadata   Json?
+  createdAt  DateTime           @default(now())
+
+  @@index([createdAt])
+  @@index([actorId])
+}
