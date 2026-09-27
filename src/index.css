@@ -1,0 +1,119 @@
+@import "tailwindcss";
+
+/* Manual light/dark toggle instead of the OS-preference-only default —
+   see context/ThemeContext.tsx. Anything using `dark:` classes, or the
+   --color-surface variable below, responds to a `.dark` class on <html>. */
+@custom-variant dark (&:where(.dark, .dark *));
+
+/* -----------------------------------------------------------------------
+   Design tokens — Inquiry Tracker ("InquireOS")
+   Palette: near-white slate surface, deep indigo primary, restrained status
+   accents. Display face = Inter (clean, works well at small dashboard
+   sizes); mono face = JetBrains Mono, used only for record IDs, timestamps
+   and codes so the "system of record" feel comes through without leaning
+   on decoration.
+------------------------------------------------------------------------ */
+@theme {
+  --font-sans: 'Inter', ui-sans-serif, system-ui, sans-serif;
+  --font-mono: 'JetBrains Mono', ui-monospace, 'SFMono-Regular', monospace;
+
+  --color-brand-50: #eef2ff;
+  --color-brand-100: #e0e7ff;
+  --color-brand-200: #c7d2fe;
+  --color-brand-400: #818cf8;
+  --color-brand-500: #6366f1;
+  --color-brand-600: #4f46e5;
+  --color-brand-700: #4338ca;
+  --color-brand-900: #312e81;
+
+  --color-surface: #f7f8fb;
+}
+
+@layer base {
+  html {
+    font-family: var(--font-sans);
+  }
+
+  body {
+    background-color: var(--color-surface);
+    color: #0f172a;
+  }
+
+  /* Dark mode currently covers the app chrome (Sidebar/Topbar/Account
+     panel) and page background — see ThemeContext.tsx. Full per-page
+     dark styling (tables, cards, modals) is a follow-up, not in scope
+     for this pass. */
+  .dark {
+    --color-surface: #0b0f19;
+  }
+
+  .dark body {
+    color: #e2e8f0;
+  }
+
+  ::selection {
+    background-color: var(--color-brand-200);
+  }
+}
+
+@layer utilities {
+  .font-mono-tabular {
+    font-family: var(--font-mono);
+    font-variant-numeric: tabular-nums;
+  }
+
+  .animate-fade-in {
+    animation: fadeIn 200ms cubic-bezier(0.16, 1, 0.3, 1) forwards;
+  }
+
+  .animate-slide-up {
+    animation: slideUp 250ms cubic-bezier(0.16, 1, 0.3, 1) forwards;
+  }
+
+  .animate-modal-enter {
+    animation: modalEnter 220ms cubic-bezier(0.16, 1, 0.3, 1) forwards;
+  }
+}
+
+@keyframes fadeIn {
+  from {
+    opacity: 0;
+  }
+  to {
+    opacity: 1;
+  }
+}
+
+@keyframes slideUp {
+  from {
+    opacity: 0;
+    transform: translateY(8px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+@keyframes modalEnter {
+  from {
+    opacity: 0;
+    transform: scale(0.96) translateY(6px);
+  }
+  to {
+    opacity: 1;
+    transform: scale(1) translateY(0);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *,
+  ::before,
+  ::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+    scroll-behavior: auto !important;
+  }
+}
+
